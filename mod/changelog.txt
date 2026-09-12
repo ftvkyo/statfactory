@@ -1,4 +1,13 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.0.4
+Date: 2026-09-12
+  Features:
+    - Track research progress and the currently active technology per force.
+  Changes:
+    - Refresh pollution, evolution, kills, and production every second instead of every 10 seconds,
+      matching the export interval — only the area_paved drift correction stays on its own (5 minute)
+      timer, since it recounts tiles across the whole surface.
+---------------------------------------------------------------------------------------------------
 Version: 0.0.3
 Date: 2026-09-05
   Features:
