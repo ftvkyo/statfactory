@@ -108,11 +108,21 @@ local function on_research_finished(event)
     counters.researches_finished:increment_by(1, { event.research.force.name })
 end
 
---- Every 1 second
---- @param event NthTickEventData
-local function on_60th_tick(event)
-    counters.ticks_played:set(game.tick)
-    collect_metrics()
+--- @param force LuaForce
+local function refresh_research(force)
+    local current = force.current_research
+    local previous_name = storage.current_research[force.name]
+
+    if current ~= nil then
+        if previous_name ~= nil and previous_name ~= current.name then
+            gauges.research_progress:set(0, { force.name, previous_name })
+        end
+        gauges.research_progress:set(force.research_progress, { force.name, current.name })
+        storage.current_research[force.name] = current.name
+    elseif previous_name ~= nil then
+        gauges.research_progress:set(0, { force.name, previous_name })
+        storage.current_research[force.name] = nil
+    end
 end
 
 --- @param surface LuaSurface
@@ -186,9 +196,13 @@ local function refresh_production(surface)
     end
 end
 
---- Every 10 seconds
+--- Every 1 second. Reads (get_*_statistics, get_total_pollution, evolution getters) are cheap
+--- lookups of Factorio's own pre-aggregated counters, not recomputation, so refreshing all of this
+--- every second — rather than the previous 10-second tier — costs nothing worth measuring.
 --- @param event NthTickEventData
-local function on_600th_tick(event)
+local function on_60th_tick(event)
+    counters.ticks_played:set(game.tick)
+
     for _, surface in pairs(game.surfaces) do
         if surface.pollutant_type ~= nil then
             refresh_pollution(surface)
@@ -198,6 +212,12 @@ local function on_600th_tick(event)
         refresh_kills(surface)
         refresh_production(surface)
     end
+
+    for _, force in pairs(game.forces) do
+        refresh_research(force)
+    end
+
+    collect_metrics()
 end
 
 --- Every 5 minutes. Corrects area_paved drift from tile destruction that
@@ -235,6 +255,8 @@ local function load()
     counters.rockets_launched = registry:new_counter("rockets_launched", "Rockets launched", { "surface", "force" })
     counters.researches_finished = registry:new_counter("researches_finished", "Researches finished", { "force" })
 
+    gauges.research_progress = registry:new_gauge("research_progress", "Progress of the current research", { "force", "technology" })
+
     collect_metrics()
 end
 
@@ -245,6 +267,10 @@ local function init()
 
     if not storage.pavement_tiles_seen then
         storage.pavement_tiles_seen = {}
+    end
+
+    if not storage.current_research then
+        storage.current_research = {}
     end
 
     load()
@@ -274,7 +300,6 @@ script.on_event(defines.events.on_rocket_launched, on_rocket_launched)
 script.on_event(defines.events.on_research_finished, on_research_finished)
 
 script.on_nth_tick(60, on_60th_tick)
-script.on_nth_tick(600, on_600th_tick)
 script.on_nth_tick(18000, on_18000th_tick)
 
 script.on_init(init)
