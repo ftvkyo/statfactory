@@ -304,6 +304,15 @@ script.on_nth_tick(18000, on_18000th_tick)
 
 script.on_init(init)
 
+-- `on_load` only fires for a save that already exists, so it can never backfill a
+-- `storage` field added by a later mod version the way `on_init`'s guards do — `game`
+-- isn't available there to run `init`'s own `on_player_change` either. So an existing
+-- save that predates a field (e.g. `storage.current_research`, added in 0.0.4) keeps
+-- hitting `nil` on it forever unless something re-runs those guards after an upgrade.
+-- `on_configuration_changed` is that something: it fires once after a mod version
+-- change, with `game` available, which is exactly what `init` already assumes.
+script.on_configuration_changed(init)
+
 -- `load()` only reads `storage` (available here) and calls `helpers.write_file`
 -- (safe outside of game-state context); it never touches `game`, which is nil
 -- during `on_load`. See https://lua-api.factorio.com/latest/classes/LuaBootstrap.html#on_load
