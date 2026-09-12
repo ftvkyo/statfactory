@@ -260,7 +260,14 @@ local function load()
     collect_metrics()
 end
 
-local function init()
+--- Create any `storage` field a fresh save doesn't have yet. Safe to call whenever
+--- `storage` may be missing something `load()`/the refresh functions assume exists —
+--- `init` (a brand new save) and `on_configuration_changed` (an existing save catching
+--- up to a newer mod version) are both such times, but this must never itself call
+--- `load()`: `on_load` already runs unconditionally before `on_configuration_changed`
+--- fires on every startup, and `load()` is not idempotent — the vendored prometheus
+--- library errors on registering the same collector id twice.
+local function backfill_storage()
     if not storage.registry then
         storage.registry = {}
     end
@@ -272,6 +279,10 @@ local function init()
     if not storage.current_research then
         storage.current_research = {}
     end
+end
+
+local function init()
+    backfill_storage()
 
     load()
 
@@ -305,13 +316,13 @@ script.on_nth_tick(18000, on_18000th_tick)
 script.on_init(init)
 
 -- `on_load` only fires for a save that already exists, so it can never backfill a
--- `storage` field added by a later mod version the way `on_init`'s guards do — `game`
--- isn't available there to run `init`'s own `on_player_change` either. So an existing
+-- `storage` field added by a later mod version the way `init`'s guards do. An existing
 -- save that predates a field (e.g. `storage.current_research`, added in 0.0.4) keeps
 -- hitting `nil` on it forever unless something re-runs those guards after an upgrade.
--- `on_configuration_changed` is that something: it fires once after a mod version
--- change, with `game` available, which is exactly what `init` already assumes.
-script.on_configuration_changed(init)
+-- `on_configuration_changed` is that something — but only `backfill_storage`, not the
+-- whole of `init`: `on_load` (below) already ran `load()` moments earlier in the same
+-- startup, and calling it again here would double-register every collector.
+script.on_configuration_changed(backfill_storage)
 
 -- `load()` only reads `storage` (available here) and calls `helpers.write_file`
 -- (safe outside of game-state context); it never touches `game`, which is nil
