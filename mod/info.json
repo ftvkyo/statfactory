@@ -1,6 +1,6 @@
 {
     "name": "statfactory",
-    "version": "0.0.4",
+    "version": "0.0.5",
     "title": "statfactory",
     "author": "ftvkyo",
     "description": "Exports live game metrics (production, pollution, evolution, kills, players, and more) to Prometheus for use with Grafana.",

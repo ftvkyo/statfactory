@@ -1,4 +1,12 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.0.5
+Date: 2026-09-12
+  Bugfixes:
+    - Fix a crash ("attempt to index field 'current_research' (a nil value)") on every save that
+      was started before 0.0.4 added storage.current_research — that field was only backfilled on
+      on_init, which never re-runs for an existing save. Now also backfilled via
+      on_configuration_changed, which does.
+---------------------------------------------------------------------------------------------------
 Version: 0.0.4
 Date: 2026-09-12
   Features:
