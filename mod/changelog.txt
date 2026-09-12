@@ -1,4 +1,13 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.0.6
+Date: 2026-09-12
+  Bugfixes:
+    - Fix a crash ("Collector id `factorio_players_connected` is already registered") on every
+      existing save on upgrade to 0.0.5 — its on_configuration_changed fix called all of init(),
+      including load(), duplicating the registration on_load already made moments earlier in the
+      same startup. Storage backfill is now its own function, called alone from
+      on_configuration_changed.
+---------------------------------------------------------------------------------------------------
 Version: 0.0.5
 Date: 2026-09-12
   Bugfixes:
