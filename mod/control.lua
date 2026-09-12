@@ -15,7 +15,7 @@ end
 --- @overload fun(event:EventData.on_player_kicked)
 --- @overload fun(event:EventData.on_player_banned)
 --- @overload fun(event:EventData.on_player_unbanned)
-local function on_player_change(event)
+local function on_player_change(_event)
     gauges.players_connected:set(#game.connected_players)
     gauges.players_total:set(#game.players)
 end
@@ -199,8 +199,8 @@ end
 --- Every 1 second. Reads (get_*_statistics, get_total_pollution, evolution getters) are cheap
 --- lookups of Factorio's own pre-aggregated counters, not recomputation, so refreshing all of this
 --- every second — rather than the previous 10-second tier — costs nothing worth measuring.
---- @param event NthTickEventData
-local function on_60th_tick(event)
+--- @param _event NthTickEventData
+local function on_60th_tick(_event)
     counters.ticks_played:set(game.tick)
 
     for _, surface in pairs(game.surfaces) do
@@ -222,8 +222,8 @@ end
 
 --- Every 5 minutes. Corrects area_paved drift from tile destruction that
 --- bypasses the built/mined tile events (nukes, reactor explosions, etc.).
---- @param event NthTickEventData
-local function on_18000th_tick(event)
+--- @param _event NthTickEventData
+local function on_18000th_tick(_event)
     for _, surface in pairs(game.surfaces) do
         refresh_area_paved(surface)
     end

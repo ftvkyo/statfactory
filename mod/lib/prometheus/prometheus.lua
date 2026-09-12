@@ -1,7 +1,9 @@
 --- @param str string
 --- @return string
 local function escape_string(str)
-    str, _ = str:gsub("\\", "\\\\"):gsub("\n", "\\n"):gsub('"', '\\"')
+    -- Parenthesized to truncate gsub's second return (replacement count) to nothing, rather than
+    -- assigning it to an undeclared `_` — that was an implicit global write, not a local discard.
+    str = (str:gsub("\\", "\\\\"):gsub("\n", "\\n"):gsub('"', '\\"'))
     return str
 end
 
