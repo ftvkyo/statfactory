@@ -42,6 +42,33 @@ local function on_player_died(event)
     end
 end
 
+--- Concepts/Color.html: channels are floats in [0,1], UNLESS any channel is > 1, in which
+--- case every channel (including alpha) is meant to be read as [0,255] instead - so the
+--- scale can't be assumed from range alone without checking every channel first. Alpha is
+--- read but not applied: the docs note colors are usually stored pre-multiplied by alpha,
+--- but a player's identity color is always fully opaque in practice, so un-multiplying
+--- would be complexity with nothing to correct.
+--- @param color Color
+--- @return string
+local function color_to_hex(color)
+    local r = color.r or 0
+    local g = color.g or 0
+    local b = color.b or 0
+    local a = color.a or 1
+
+    if r <= 1 and g <= 1 and b <= 1 and a <= 1 then
+        r = r * 255
+        g = g * 255
+        b = b * 255
+    end
+
+    r = math.floor(math.min(math.max(r, 0), 255) + 0.5)
+    g = math.floor(math.min(math.max(g, 0), 255) + 0.5)
+    b = math.floor(math.min(math.max(b, 0), 255) + 0.5)
+
+    return string.format("#%02x%02x%02x", r, g, b)
+end
+
 --- Only tiles placeable by an item (concrete, stone-path, landfill, etc.)
 --- count as "pavement". Natural terrain tiles are never placed this way, so
 --- this also guards `pavement_tiles_seen` against ever recording one -
@@ -283,6 +310,31 @@ local function refresh_research(force)
     end
 end
 
+--- Exposes each player's identity color (LuaPlayer.color - tints their character,
+--- buildings and vehicles; distinct from chat_color, which only colors chat text) as a
+--- hex label, so a Grafana "Config from query results" transform can read it and color
+--- other panels' per-player series to match, instead of hand-maintaining a static color
+--- override per player. The gauge's numeric value carries no meaning of its own (always 1
+--- for the active hex, 0 for a superseded one) - the hex label is the payload. Same
+--- remember-and-zero-the-old-value pattern as refresh_research: colors rarely change, so
+--- this is a poll rather than wiring the dedicated on_player_color_changed event, and
+--- polling means an existing save upgrading to this version backfills every known
+--- player's color on its very first tick rather than only from their next change.
+local function refresh_player_colors()
+    for _, player in pairs(game.players) do
+        local hex = color_to_hex(player.color)
+        local previous_hex = storage.player_color[player.name]
+
+        if previous_hex ~= hex then
+            if previous_hex ~= nil then
+                gauges.player_color:set(0, { player.force.name, player.name, previous_hex })
+            end
+            gauges.player_color:set(1, { player.force.name, player.name, hex })
+            storage.player_color[player.name] = hex
+        end
+    end
+end
+
 --- @param surface LuaSurface
 local function refresh_pollution(surface)
     local pollution = surface:get_total_pollution()
@@ -452,6 +504,8 @@ local function on_60th_tick(_event)
         refresh_platforms(force)
     end
 
+    refresh_player_colors()
+
     collect_metrics()
 end
 
@@ -520,6 +574,12 @@ local function load()
         { "index", "name", "state" }
     )
 
+    gauges.player_color = registry:new_gauge(
+        "player_color",
+        "Player identity color as a #rrggbb hex label (1 = active hex, 0 = superseded)",
+        { "force", "name", "hex" }
+    )
+
     collect_metrics()
 end
 
@@ -557,6 +617,10 @@ local function backfill_storage()
 
     if not storage.train_stop_names_seen then
         storage.train_stop_names_seen = {}
+    end
+
+    if not storage.player_color then
+        storage.player_color = {}
     end
 end
 

@@ -1,4 +1,11 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.0.8
+Date: 2026-09-13
+  Features:
+    - Track each player's identity color (player_color) as a #rrggbb hex label, so a
+      Grafana "Config from query results" transform can dynamically color other panels'
+      per-player series to match, instead of a hand-maintained static override per player.
+---------------------------------------------------------------------------------------------------
 Version: 0.0.7
 Date: 2026-09-13
   Features:
