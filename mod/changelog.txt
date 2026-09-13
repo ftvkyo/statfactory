@@ -1,4 +1,16 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.0.10
+Date: 2026-09-13
+  Bugfixes:
+    - Fix a crash ("Arguments count error for 'get_inventory': Expected 1 argument but 2 were
+      given") on every cargo pod launch, introduced in 0.0.7. snapshot_cargo_contents called
+      cargo_pod:get_inventory(...)/inventory:get_contents() with colon syntax, which passes an
+      extra implicit self argument on top of the real one - unlike this file's own gauge/counter
+      objects (real Lua OOP, colon genuinely required), Factorio's own API methods here need dot
+      syntax with only the real argument, matching every other Factorio API call already in this
+      file (e.g. force.get_kill_count_statistics(surface)). Audited every other method call in
+      the file for the same mistake; found no others.
+---------------------------------------------------------------------------------------------------
 Version: 0.0.8
 Date: 2026-09-13
   Features:

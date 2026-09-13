@@ -234,12 +234,12 @@ end
 --- @return table<string, uint>
 local function snapshot_cargo_contents(cargo_pod)
     local counts = {}
-    local inventory = cargo_pod:get_inventory(defines.inventory.cargo_unit)
+    local inventory = cargo_pod.get_inventory(defines.inventory.cargo_unit)
     if inventory == nil then
         return counts
     end
 
-    for _, item in pairs(inventory:get_contents()) do
+    for _, item in pairs(inventory.get_contents()) do
         counts[item.name] = (counts[item.name] or 0) + item.count
     end
     return counts
