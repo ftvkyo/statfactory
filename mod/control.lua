@@ -5,6 +5,20 @@ local registry = prometheus.Registry.new("factorio_")
 local gauges = {}
 local counters = {}
 
+--- Built once: defines.train_state's values are the union `train.state` returns, so a
+--- lookup by value gives the label name without hardcoding the member list or
+--- recomputing it on every poll.
+local train_state_names = {}
+for name, value in pairs(defines.train_state) do
+    train_state_names[value] = name
+end
+
+--- Same idea as train_state_names, for space platforms.
+local platform_state_names = {}
+for name, value in pairs(defines.space_platform_state) do
+    platform_state_names[value] = name
+end
+
 local function collect_metrics()
     helpers.write_file("statfactory/game.prom", registry:collect_metrics(), false)
 end
@@ -108,6 +122,150 @@ local function on_research_finished(event)
     counters.researches_finished:increment_by(1, { event.research.force.name })
 end
 
+--- Seconds since the previous train arrived at a station, plus (if this train had a
+--- recorded departure) the trip/wait time for the leg that just finished. Deliberately
+--- never labels by train id: ids get reassigned on every couple/decouple, and
+--- Prometheus observations here never expire, so a per-train label would leak an
+--- ever-growing series set over a long save. `storage.train_trip` keys on train id
+--- internally only, as scratch bookkeeping, never as a label.
+---
+--- `train_trip_time`/`train_wait_time` also carry the train's `group` (LuaTrain.group,
+--- real API since 2.0's Trains-GUI grouping - LuaSchedule.group confirms it's not just a
+--- GUI concept): station names alone aren't a safe route identity on a base with several
+--- groups, since backer_name can be, and commonly is, reused - both across multiple
+--- physical stops feeding one logical destination (see train_stops) and, in principle,
+--- across two unrelated groups that happen to name a stop the same thing. `group` doesn't
+--- help disambiguate identically-named *physical* stops (that's inherent to using
+--- backer_name at all, not something a train-side label can fix), but it does stop two
+--- different groups' routes from being silently averaged into one series if they ever
+--- share a from/to name pair. `train_arrival_time` deliberately does NOT carry `group` -
+--- it means "how often does any train show up here", and fragmenting that by group would
+--- defeat the point. Captured once into storage.train_trip at leg start, not re-read from
+--- train.group at completion, so a mid-trip reassignment can't retroactively relabel a leg
+--- that already started.
+--- @param event EventData.on_train_changed_state
+local function on_train_changed_state(event)
+    local train = event.train
+    local carriage = train.carriages[1]
+    if carriage == nil then
+        return
+    end
+    local surface = carriage.surface
+
+    if train.state == defines.train_state.wait_station and train.station ~= nil then
+        local station_name = train.station.backer_name
+
+        local arrivals = storage.train_last_arrival[surface.name]
+        if arrivals == nil then
+            arrivals = {}
+            storage.train_last_arrival[surface.name] = arrivals
+        end
+
+        local previous_tick = arrivals[station_name]
+        if previous_tick ~= nil then
+            gauges.train_arrival_time:set((event.tick - previous_tick) / 60, { surface.name, station_name })
+        end
+        arrivals[station_name] = event.tick
+
+        local trip = storage.train_trip[train.id]
+        if trip ~= nil and trip.departed_tick ~= nil then
+            gauges.train_trip_time:set(
+                (event.tick - trip.departed_tick) / 60,
+                { surface.name, trip.from, station_name, trip.group }
+            )
+            gauges.train_wait_time:set(trip.wait_accum / 60, { surface.name, trip.from, station_name, trip.group })
+        end
+        -- `group` is captured now (not re-read from `train.group` at completion) so a
+        -- mid-trip reassignment can't retroactively relabel a leg that already started.
+        storage.train_trip[train.id] = { from = station_name, wait_accum = 0, group = train.group or "" }
+    end
+
+    if event.old_state == defines.train_state.wait_station and train.state ~= defines.train_state.wait_station then
+        local trip = storage.train_trip[train.id]
+        if trip ~= nil then
+            trip.departed_tick = event.tick
+        end
+    end
+
+    if train.state == defines.train_state.wait_signal then
+        local trip = storage.train_trip[train.id]
+        if trip ~= nil then
+            trip.wait_started = event.tick
+        end
+    end
+
+    if event.old_state == defines.train_state.wait_signal and train.state ~= defines.train_state.wait_signal then
+        local trip = storage.train_trip[train.id]
+        if trip ~= nil and trip.wait_started ~= nil then
+            trip.wait_accum = trip.wait_accum + (event.tick - trip.wait_started)
+            trip.wait_started = nil
+        end
+    end
+end
+
+--- @param cargo_pod LuaEntity
+--- @return table<string, uint>
+local function snapshot_cargo_contents(cargo_pod)
+    local counts = {}
+    local inventory = cargo_pod:get_inventory(defines.inventory.cargo_unit)
+    if inventory == nil then
+        return counts
+    end
+
+    for _, item in pairs(inventory:get_contents()) do
+        counts[item.name] = (counts[item.name] or 0) + item.count
+    end
+    return counts
+end
+
+--- Snapshots contents at launch and credits items_launched immediately - the ascend
+--- event itself is the "did it actually leave" signal. The snapshot is kept, keyed by
+--- unit_number, so on_cargo_pod_delivered_cargo can credit items_delivered from what was
+--- launched rather than re-reading the pod's inventory, which delivery may have already
+--- emptied by the time that event fires. A pod destroyed before delivery (rocket
+--- explodes, no path, etc.) leaves its snapshot in storage forever - a small,
+--- session-bounded leak, and also exactly the launched-but-never-delivered gap this
+--- metric pair exists to surface.
+--- @param event EventData.on_cargo_pod_finished_ascending
+local function on_cargo_pod_finished_ascending(event)
+    local cargo_pod = event.cargo_pod
+    if cargo_pod == nil or not cargo_pod.valid then
+        return
+    end
+
+    local origin = cargo_pod.cargo_pod_origin
+    local surface = (origin ~= nil and origin.valid) and origin.surface or cargo_pod.surface
+    local force = cargo_pod.force
+
+    local contents = snapshot_cargo_contents(cargo_pod)
+    storage.cargo_pod_contents[cargo_pod.unit_number] = contents
+
+    for name, count in pairs(contents) do
+        counters.items_launched:increment_by(count, { surface.name, force.name, name })
+    end
+end
+
+--- @param event EventData.on_cargo_pod_delivered_cargo
+local function on_cargo_pod_delivered_cargo(event)
+    local cargo_pod = event.cargo_pod
+    if cargo_pod == nil or not cargo_pod.valid then
+        return
+    end
+
+    local contents = storage.cargo_pod_contents[cargo_pod.unit_number]
+    storage.cargo_pod_contents[cargo_pod.unit_number] = nil
+    if contents == nil then
+        return
+    end
+
+    local surface = cargo_pod.surface
+    local force = cargo_pod.force
+
+    for name, count in pairs(contents) do
+        counters.items_delivered:increment_by(count, { surface.name, force.name, name })
+    end
+end
+
 --- @param force LuaForce
 local function refresh_research(force)
     local current = force.current_research
@@ -196,6 +354,80 @@ local function refresh_production(surface)
     end
 end
 
+--- Zeroes every state first so a state that drops to 0 trains is reported as 0, not
+--- left at its last nonzero value (same reasoning as refresh_research zeroing the
+--- technology it just switched away from). Surfaces a stuck/congested rail network
+--- (high no_path/wait_signal/destination_full) at a glance. Space-platform surfaces
+--- simply have no trains, so this is unconditional for every surface like
+--- refresh_kills/refresh_production above, not gated on pollutant_type.
+--- @param surface LuaSurface
+local function refresh_trains(surface)
+    local counts = {}
+    for _, name in pairs(train_state_names) do
+        counts[name] = 0
+    end
+
+    for _, train in pairs(game.train_manager.get_trains({ surface = surface })) do
+        local name = train_state_names[train.state]
+        counts[name] = counts[name] + 1
+    end
+
+    for name, count in pairs(counts) do
+        gauges.train_state:set(count, { surface.name, name })
+    end
+end
+
+--- Counts physical train-stop entities per backer_name (several physical stops commonly
+--- share one logical name, e.g. three "Iron Ore Pickup" stops feeding one route - this
+--- reports how many, which is also the reader's cue that train_arrival_time/
+--- train_trip_time/train_wait_time above are aggregated across every physical stop
+--- sharing that name, not naming a single entity). Same seen-names-zeroed pattern as
+--- mark_pavement_tile_seen/refresh_area_paved: a name renamed or removed must read back
+--- as 0, not linger at its last nonzero count.
+--- @param surface LuaSurface
+local function refresh_train_stops(surface)
+    local counts = {}
+    for _, stop in pairs(surface.find_entities_filtered({ type = "train-stop" })) do
+        local name = stop.backer_name
+        counts[name] = (counts[name] or 0) + 1
+    end
+
+    local seen = storage.train_stop_names_seen[surface.index]
+    if seen == nil then
+        seen = {}
+        storage.train_stop_names_seen[surface.index] = seen
+    end
+
+    for name, _ in pairs(counts) do
+        seen[name] = true
+    end
+
+    for name, _ in pairs(seen) do
+        gauges.train_stops:set(counts[name] or 0, { surface.name, name })
+    end
+end
+
+--- Labelled by platform per-object rather than aggregated like refresh_trains: platforms
+--- are few and, unlike trains, don't get a fresh id on every couple/decouple, so a
+--- per-platform label doesn't risk the series-count leak that ruled out a per-train label
+--- above. Keyed on `index`, not `name`: LuaSpacePlatform's own doc page calls `index` "the
+--- unique index of this space platform" but makes no such claim for `name`, so two
+--- platforms sharing a name (unrenamed defaults, or two players choosing the same string)
+--- would otherwise silently merge into one series. `name` is still included as a
+--- human-readable label - it just isn't what identifies the row. `force.platforms`
+--- includes platforms pending deletion, hence the `valid` check.
+--- @param force LuaForce
+local function refresh_platforms(force)
+    for _, platform in pairs(force.platforms) do
+        if platform.valid then
+            for _, name in pairs(platform_state_names) do
+                gauges.platform_state:set(0, { platform.index, platform.name, name })
+            end
+            gauges.platform_state:set(1, { platform.index, platform.name, platform_state_names[platform.state] })
+        end
+    end
+end
+
 --- Every 1 second. Reads (get_*_statistics, get_total_pollution, evolution getters) are cheap
 --- lookups of Factorio's own pre-aggregated counters, not recomputation, so refreshing all of this
 --- every second — rather than the previous 10-second tier — costs nothing worth measuring.
@@ -211,10 +443,13 @@ local function on_60th_tick(_event)
 
         refresh_kills(surface)
         refresh_production(surface)
+        refresh_trains(surface)
+        refresh_train_stops(surface)
     end
 
     for _, force in pairs(game.forces) do
         refresh_research(force)
+        refresh_platforms(force)
     end
 
     collect_metrics()
@@ -257,6 +492,34 @@ local function load()
 
     gauges.research_progress = registry:new_gauge("research_progress", "Progress of the current research", { "force", "technology" })
 
+    gauges.train_state = registry:new_gauge("train_state", "Trains by state", { "surface", "state" })
+    gauges.train_stops = registry:new_gauge("train_stops", "Physical train stop entities by name", { "surface", "name" })
+    gauges.train_arrival_time = registry:new_gauge(
+        "train_arrival_time",
+        "Seconds since the previous train arrived at a station",
+        { "surface", "station" }
+    )
+    gauges.train_trip_time = registry:new_gauge(
+        "train_trip_time",
+        "Seconds for a train to travel between two stations",
+        { "surface", "from", "to", "group" }
+    )
+    gauges.train_wait_time = registry:new_gauge(
+        "train_wait_time",
+        "Seconds a train spent waiting at a signal during a trip",
+        { "surface", "from", "to", "group" }
+    )
+
+    counters.items_launched = registry:new_counter("items_launched", "Items launched via cargo pod", { "surface", "force", "name" })
+    counters.items_delivered =
+        registry:new_counter("items_delivered", "Items delivered via cargo pod", { "surface", "force", "name" })
+
+    gauges.platform_state = registry:new_gauge(
+        "platform_state",
+        "Space platforms by state (1 = active state, 0 = inactive)",
+        { "index", "name", "state" }
+    )
+
     collect_metrics()
 end
 
@@ -278,6 +541,22 @@ local function backfill_storage()
 
     if not storage.current_research then
         storage.current_research = {}
+    end
+
+    if not storage.train_last_arrival then
+        storage.train_last_arrival = {}
+    end
+
+    if not storage.train_trip then
+        storage.train_trip = {}
+    end
+
+    if not storage.cargo_pod_contents then
+        storage.cargo_pod_contents = {}
+    end
+
+    if not storage.train_stop_names_seen then
+        storage.train_stop_names_seen = {}
     end
 end
 
@@ -309,6 +588,11 @@ script.on_event(defines.events.on_robot_mined_tile, on_tile_mined)
 
 script.on_event(defines.events.on_rocket_launched, on_rocket_launched)
 script.on_event(defines.events.on_research_finished, on_research_finished)
+
+script.on_event(defines.events.on_train_changed_state, on_train_changed_state)
+
+script.on_event(defines.events.on_cargo_pod_finished_ascending, on_cargo_pod_finished_ascending)
+script.on_event(defines.events.on_cargo_pod_delivered_cargo, on_cargo_pod_delivered_cargo)
 
 script.on_nth_tick(60, on_60th_tick)
 script.on_nth_tick(18000, on_18000th_tick)

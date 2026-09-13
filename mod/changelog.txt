@@ -1,4 +1,18 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.0.7
+Date: 2026-09-13
+  Features:
+    - Track trains by state per surface (train_state), to spot stuck or congested rail networks at
+      a glance.
+    - Track seconds since the last train arrived at a station (train_arrival_time), and per-leg
+      trip/wait time between stations (train_trip_time, train_wait_time).
+    - Track items launched and delivered via cargo pod (items_launched, items_delivered), to catch
+      cargo that launches but never arrives.
+    - Track space platforms by state (platform_state).
+    - Track physical train-stop entities by name (train_stops) - several stops commonly share one
+      logical name, so this also indicates how many stops each train_arrival_time/train_trip_time/
+      train_wait_time station label aggregates across.
+---------------------------------------------------------------------------------------------------
 Version: 0.0.6
 Date: 2026-09-12
   Bugfixes:
